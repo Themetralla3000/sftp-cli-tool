@@ -5,67 +5,61 @@ use clap::Parser;
 #[command(name = "mysftp")]
 #[command(about = "a cli sftp client")]
 #[command(version = "0.1.0")]
-struct Args{
-    //archivo o directorio a transferir
+struct Args {
+    //file or directory to transfer
     origin: String,
-    //destinatario en formato user@host:ruta_destino
+    //recipient in user@host:dest_path format
     destination: String,
-    //puerto
-    //[arg(short long)] permite referirse como una flag, short -> -p ; long -> --port
-    //default value es 22, se puede omitir esta flag
-    #[arg(short,long, default_value_t=22)]
+    //port
+    //[arg(short, long)] allows referring to it as a flag, short -> -p ; long -> --port
+    //default value is 22, this flag can be omitted
+    #[arg(short, long, default_value_t = 22)]
     port: u16,
 
-    // ruta a las claves ssh, opcional
+    // path to the ssh keys, optional
     #[arg(short = 'i', long = "identity")]
     key_path: Option<String>,
-    
-    //recursivo, opcional tambien
+
+    //recursive, also optional
     #[arg(short, long)]
     recursive: bool,
 }
-//El objeto donde guardo la información del destino
+//The struct where I store the destination info
 struct Destination {
     user: String,
     host: String,
-    path: String
+    path: String,
 }
 fn parse_destination(input: &str) -> Result<Destination, String> {
+    let (user, rest) = input.split_once('@').ok_or("Invalid format, @ missing")?;
 
-    let (user,rest) = input
-        .split_once('@')
-        .ok_or("Invalid format, @ missing")?;
+    let (host, path) = rest.split_once(':').ok_or("Invalid format, : missing")?;
 
-    let (host, path) = rest
-        .split_once(':')
-        .ok_or("Invalid format, : missing")?;
-
-    if user.is_empty(){
+    if user.is_empty() {
         return Err("User cannot be empty".to_string());
     }
 
-    if host.is_empty(){
+    if host.is_empty() {
         return Err("Host cannot be empty".to_string());
     }
 
-    Ok(Destination { 
+    Ok(Destination {
         user: (user.to_string()),
         host: (host.to_string()),
-        path: (path.to_string()) 
+        path: (path.to_string()),
     })
-    }
+}
 
 fn main() {
     let args = Args::parse();
 
     match parse_destination(&args.destination) {
         Ok(dest) => {
-            println!("Conectando a {}@{}:{}...", dest.user, dest.host, args.port);
-
+            println!("Connecting to {}@{}:{}...", dest.user, dest.host, args.port);
 
             let session = match ssh::connect(&dest.host, args.port) {
                 Ok(s) => {
-                    println!("Conexión establecida y handshake completado.");
+                    println!("Connection established and handshake completed.");
                     s
                 }
                 Err(e) => {
@@ -76,9 +70,15 @@ fn main() {
 
             match ssh::authenticate(&session, &dest.user, args.key_path.as_deref()) {
                 Ok(()) => {
-                    println!("Autenticación exitosa.");
-                    //aqui va lo chungo xd
+                    println!("Authentication successful.");
+                    //the hard part goes here
+                    if let Err(e) = ssh::transfer_file(&session, &args.origin, &dest.path) {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                    println!("File transferred correctly");
                 }
+
                 Err(e) => {
                     eprintln!("Error: {}", e);
                     std::process::exit(1);
@@ -91,4 +91,3 @@ fn main() {
         }
     }
 }
-
