@@ -95,8 +95,22 @@ pub fn transfer_file(sftp: &Sftp, local: &str, remote: &str) -> Result<(), Strin
 }
 
 pub fn transfer_dir(sftp: &Sftp, local: &str, remote: &str) -> Result<(), String> {
-    sftp.mkdir(Path::new(remote), 0o755)
-        .map_err(|e| format!("Error creating directory: {}", e))?;
+    match sftp.stat(Path::new(remote)) {
+        Ok(stat) if stat.is_dir() => {
+            //exists and it's a directory
+        }
+        Ok(_) => {
+            //exists but it's not a directory
+            return Err(format!(
+                "Remote path {} exists and it's not a directory",
+                remote
+            ));
+        }
+        Err(_) => {
+            sftp.mkdir(Path::new(remote), 0o755)
+                .map_err(|e| format!("Error creating directory: {}", e))?;
+        }
+    }
 
     for entry in std::fs::read_dir(local).map_err(|e| format!("Error opening iterator: {}", e))? {
         // read_dir returns iterator, entry now is a element of the iterator, so at first is a
