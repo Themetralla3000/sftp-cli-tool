@@ -1,5 +1,5 @@
 use rpassword::read_password;
-use ssh2::Session;
+use ssh2::{Session, Sftp};
 use std::io::Write;
 use std::net::TcpStream;
 use std::path::Path;
@@ -73,7 +73,7 @@ fn password_auth(session: &Session, user: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn transfer_file(session: &Session, local: &str, remote: &str) -> Result<(), String> {
+pub fn transfer_file(sftp: &Sftp, local: &str, remote: &str) -> Result<(), String> {
     let local_path = Path::new(local);
     if !local_path.exists() {
         return Err(format!("Local file not found: {}", local));
@@ -82,10 +82,8 @@ pub fn transfer_file(session: &Session, local: &str, remote: &str) -> Result<(),
         return Err(format!("Path not a file: {}", local));
     }
     let raw_data = std::fs::read(local).map_err(|e| format!("Error, could not read: {}", e))?;
-    let sftp_session = session
-        .sftp()
-        .map_err(|e| format!("Error, could not create sftp session: {}", e))?;
-    let mut remote_file = sftp_session
+
+    let mut remote_file = sftp
         .create(Path::new(remote))
         .map_err(|e| format!("Error creating remote {}: {}", remote, e))?;
     remote_file
@@ -96,10 +94,7 @@ pub fn transfer_file(session: &Session, local: &str, remote: &str) -> Result<(),
     Ok(())
 }
 
-pub fn transfer_dir(session: &Session, local: &str, remote: &str) -> Result<(), String> {
-    let sftp = session
-        .sftp()
-        .map_err(|e| format!("Error creating sftp session: {}", e))?;
+pub fn transfer_dir(sftp: &Sftp, local: &str, remote: &str) -> Result<(), String> {
     sftp.mkdir(Path::new(remote), 0o755)
         .map_err(|e| format!("Error creating directory: {}", e))?;
 
@@ -118,10 +113,10 @@ pub fn transfer_dir(session: &Session, local: &str, remote: &str) -> Result<(), 
         //Recursion decission: file or directory:
         if path.is_dir() {
             //recursion
-            transfer_dir(session, local_path, &remote_path)?;
+            transfer_dir(sftp, local_path, &remote_path)?;
         } else {
             //is a file
-            transfer_file(session, local_path, &remote_path)?;
+            transfer_file(sftp, local_path, &remote_path)?;
         }
     }
 

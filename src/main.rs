@@ -71,7 +71,13 @@ fn main() {
             match ssh::authenticate(&session, &dest.user, args.key_path.as_deref()) {
                 Ok(()) => {
                     println!("Authentication successful.");
-                    //the hard part goes here
+                    let sftp = match session.sftp() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("Error opening sftp: {}", e);
+                            std::process::exit(1)
+                        }
+                    };
                     if Path::new(&args.origin).is_dir() {
                         if !args.recursive {
                             // r + not directory
@@ -79,13 +85,13 @@ fn main() {
                             std::process::exit(1);
                         }
 
-                        if let Err(e) = ssh::transfer_dir(&session, &args.origin, &dest.path) {
+                        if let Err(e) = ssh::transfer_dir(&sftp, &args.origin, &dest.path) {
                             eprintln!("Error: {}", e);
                             std::process::exit(1);
                         }
                     } else {
                         //is file
-                        if let Err(e) = ssh::transfer_file(&session, &args.origin, &dest.path) {
+                        if let Err(e) = ssh::transfer_file(&sftp, &args.origin, &dest.path) {
                             eprintln!("Error: {}", e);
                             std::process::exit(1);
                         }
