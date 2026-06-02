@@ -96,3 +96,34 @@ pub fn transfer_file(session: &Session, local: &str, remote: &str) -> Result<(),
     Ok(())
 }
 
+pub fn transfer_dir(session: &Session, local: &str, remote: &str) -> Result<(), String> {
+    let sftp = session
+        .sftp()
+        .map_err(|e| format!("Error creating sftp session: {}", e))?;
+    sftp.mkdir(Path::new(remote), 0o755)
+        .map_err(|e| format!("Error creating directory: {}", e))?;
+
+    for entry in std::fs::read_dir(local).map_err(|e| format!("Error opening iterator: {}", e))? {
+        // read_dir returns iterator, entry now is a element of the iterator, so at first is a
+        // Result<DirEntry, Error>
+        // need to unpack first
+        let entry = entry.map_err(|e| format!("Error: {}", e))?; //this is called
+        //shadowing, it means to create a new variable shadowing the previous one
+        let path = entry.path();
+        let name = entry.file_name();
+
+        //now for invoking the recursion, i need to create the path the way transfer_dir uses it
+        let remote_path = format!("{}/{}", remote, name.to_string_lossy());
+        let local_path = path.to_str().ok_or("Path is not a valid UTF-8")?;
+        //Recursion decission: file or directory:
+        if path.is_dir() {
+            //recursion
+            transfer_dir(session, local_path, &remote_path)?;
+        } else {
+            //is a file
+            transfer_file(session, local_path, &remote_path)?;
+        }
+    }
+
+    Ok(())
+}

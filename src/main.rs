@@ -1,6 +1,6 @@
 mod ssh;
 use clap::Parser;
-
+use std::path::Path;
 #[derive(Parser, Debug)]
 #[command(name = "mysftp")]
 #[command(about = "a cli sftp client")]
@@ -72,10 +72,27 @@ fn main() {
                 Ok(()) => {
                     println!("Authentication successful.");
                     //the hard part goes here
-                    if let Err(e) = ssh::transfer_file(&session, &args.origin, &dest.path) {
-                        eprintln!("Error: {}", e);
-                        std::process::exit(1);
+                    if Path::new(&args.origin).is_dir() {
+                        if !args.recursive {
+                            // r + not directory
+                            eprintln!("Error: {} is a directory", args.origin);
+                            std::process::exit(1);
+                        }
+
+                        if let Err(e) = ssh::transfer_dir(&session, &args.origin, &dest.path) {
+                            eprintln!("Error: {}", e);
+                            std::process::exit(1);
+                        }
+                    } else {
+                        //is file
+                        if let Err(e) = ssh::transfer_file(&session, &args.origin, &dest.path) {
+                            eprintln!("Error: {}", e);
+                            std::process::exit(1);
+                        }
                     }
+
+                    //recursive
+
                     println!("File transferred correctly");
                 }
 
