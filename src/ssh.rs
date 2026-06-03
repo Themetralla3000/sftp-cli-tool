@@ -1,6 +1,6 @@
 use rpassword::read_password;
 use ssh2::{Session, Sftp};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -82,19 +82,27 @@ pub fn transfer_file(sftp: &Sftp, local: &str, remote: &str, preserve: bool) -> 
     if !local_path.is_file() {
         return Err(format!("Path not a file: {}", local));
     }
-    let raw_data = std::fs::read(local).map_err(|e| format!("Error, could not read: {}", e))?;
+
+    let mut file =
+        std::fs::File::open(local).map_err(|e| format!("Error opening local file: {}", e))?;
 
     let mut remote_file = sftp
         .create(Path::new(remote))
         .map_err(|e| format!("Error creating remote {}: {}", remote, e))?;
-    remote_file
-        .write_all(&raw_data)
-        .map_err(|e| format!("Error writing file: {}", e))?;
-    //no need to close connection or anything, when the function leaves its scope, it drops
-    //everything instanciated wujuu
+    let mut buf = [0u8; 32 * 1024]; //32kb
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("Error reading file chunk: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        remote_file
+            .write_all(&buf[..n])
+            .map_err(|e| format!("could not write from buffer: {}", e))?;
+    }
 
     //check metadata
-
     if preserve {
         apply_metadata(sftp, local, remote)?;
     }
