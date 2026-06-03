@@ -13,9 +13,11 @@ struct Args {
     //port
     //[arg(short, long)] allows referring to it as a flag, short -> -p ; long -> --port
     //default value is 22, this flag can be omitted
-    #[arg(short, long, default_value_t = 22)]
+    #[arg(short = 'P', long = "port", default_value_t = 22)]
     port: u16,
 
+    #[arg(short, long)]
+    presserve: bool,
     // path to the ssh keys, optional
     #[arg(short = 'i', long = "identity")]
     key_path: Option<String>,
@@ -78,6 +80,22 @@ fn main() {
                             std::process::exit(1)
                         }
                     };
+
+                    //to match how scp handles creating files from the path adding intermidiate
+                    //directories, I have to first construct the path
+
+                    let basename = match Path::new(&args.origin).file_name() {
+                        Some(name) => name.to_string_lossy(),
+                        None => {
+                            eprintln!("Error: invalid source path: {}", args.origin);
+                            std::process::exit(1);
+                        }
+                    };
+                    let remote_target = match sftp.stat(Path::new(&dest.path)) {
+                        Ok(s) if s.is_dir() => format!("{}/{}", dest.path, basename),
+                        _ => dest.path.clone(),
+                    };
+
                     if Path::new(&args.origin).is_dir() {
                         if !args.recursive {
                             // r + not directory
@@ -85,13 +103,17 @@ fn main() {
                             std::process::exit(1);
                         }
 
-                        if let Err(e) = ssh::transfer_dir(&sftp, &args.origin, &dest.path) {
+                        if let Err(e) =
+                            ssh::transfer_dir(&sftp, &args.origin, &remote_target, args.presserve)
+                        {
                             eprintln!("Error: {}", e);
                             std::process::exit(1);
                         }
                     } else {
                         //is file
-                        if let Err(e) = ssh::transfer_file(&sftp, &args.origin, &dest.path) {
+                        if let Err(e) =
+                            ssh::transfer_file(&sftp, &args.origin, &remote_target, args.presserve)
+                        {
                             eprintln!("Error: {}", e);
                             std::process::exit(1);
                         }

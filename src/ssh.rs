@@ -2,6 +2,7 @@ use rpassword::read_password;
 use ssh2::{Session, Sftp};
 use std::io::Write;
 use std::net::TcpStream;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 pub fn connect(host: &str, port: u16) -> Result<Session, String> {
@@ -73,7 +74,7 @@ fn password_auth(session: &Session, user: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn transfer_file(sftp: &Sftp, local: &str, remote: &str) -> Result<(), String> {
+pub fn transfer_file(sftp: &Sftp, local: &str, remote: &str, preserve: bool) -> Result<(), String> {
     let local_path = Path::new(local);
     if !local_path.exists() {
         return Err(format!("Local file not found: {}", local));
@@ -91,10 +92,17 @@ pub fn transfer_file(sftp: &Sftp, local: &str, remote: &str) -> Result<(), Strin
         .map_err(|e| format!("Error writing file: {}", e))?;
     //no need to close connection or anything, when the function leaves its scope, it drops
     //everything instanciated wujuu
+
+    //check metadata
+
+    if preserve {
+        apply_metadata(sftp, local, remote)?;
+    }
+
     Ok(())
 }
 
-pub fn transfer_dir(sftp: &Sftp, local: &str, remote: &str) -> Result<(), String> {
+pub fn transfer_dir(sftp: &Sftp, local: &str, remote: &str, preserve: bool) -> Result<(), String> {
     match sftp.stat(Path::new(remote)) {
         Ok(stat) if stat.is_dir() => {
             //exists and it's a directory
@@ -127,12 +135,49 @@ pub fn transfer_dir(sftp: &Sftp, local: &str, remote: &str) -> Result<(), String
         //Recursion decission: file or directory:
         if path.is_dir() {
             //recursion
-            transfer_dir(sftp, local_path, &remote_path)?;
+            transfer_dir(sftp, local_path, &remote_path, preserve)?;
         } else {
             //is a file
-            transfer_file(sftp, local_path, &remote_path)?;
+            transfer_file(sftp, local_path, &remote_path, preserve)?;
         }
     }
+    if preserve {
+        apply_metadata(sftp, local, remote)?;
+    }
+
+    Ok(())
+}
+
+fn apply_metadata(sftp: &Sftp, local: &str, remote: &str) -> Result<(), String> {
+    // llegir meta de local, muntar FileStat, setstat a remote
+
+    let meta =
+        std::fs::metadata(local).map_err(|e| format!("Error, could not read metadata: {}", e))?;
+    let mode = meta.permissions().mode();
+    let mtime = meta
+        .modified()
+        .map_err(|e| format!("could not read systime: {}", e))?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("could not convert to unix time: {}", e))?
+        .as_secs();
+    let accesed = meta
+        .accessed()
+        .map_err(|e| format!("Could not read acces time: {}", e))?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("could not convert to unix time: {}", e))?
+        .as_secs();
+
+    let stat = ssh2::FileStat {
+        size: None,
+        uid: None,
+        gid: None,
+        perm: Some(mode),
+        atime: Some(accesed),
+        mtime: Some(mtime),
+    };
+
+    sftp.setstat(Path::new(remote), stat)
+        .map_err(|e| format!("Error apllying metadata to {}: {}", remote, e))?;
 
     Ok(())
 }
