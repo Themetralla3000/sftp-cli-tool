@@ -75,7 +75,13 @@ fn password_auth(session: &Session, user: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn transfer_file(sftp: &Sftp, local: &str, remote: &str, preserve: bool) -> Result<(), String> {
+pub fn transfer_file(
+    sftp: &Sftp,
+    local: &str,
+    remote: &str,
+    preserve: bool,
+    mut on_progress: impl FnMut(u64),
+) -> Result<(), String> {
     let local_path = Path::new(local);
     if !local_path.exists() {
         return Err(format!("Local file not found: {}", local));
@@ -91,18 +97,13 @@ pub fn transfer_file(sftp: &Sftp, local: &str, remote: &str, preserve: bool) -> 
         .create(Path::new(remote))
         .map_err(|e| format!("Error creating remote {}: {}", remote, e))?;
 
-    let file_length = std::fs::metadata(local)
-        .map_err(|e| format!("Could not read file metadata: {}", e))?
-        .len();
-    let mut progress = 0;
-    let mut percentage = 0;
+    //let file_length = std::fs::metadata(local).map_err(|e| format!("Could not read file metadata: {}", e))?.len();
+    //
     let mut buf = [0u8; 32 * 1024]; //32kb
     loop {
         let n = file
             .read(&mut buf)
             .map_err(|e| format!("Error reading file chunk: {}", e))?;
-        progress += n as u64;
-        percentage = progress * 100 / file_length;
         if n == 0 {
             break;
         }
@@ -110,11 +111,7 @@ pub fn transfer_file(sftp: &Sftp, local: &str, remote: &str, preserve: bool) -> 
         remote_file
             .write_all(&buf[..n])
             .map_err(|e| format!("could not write from buffer: {}", e))?;
-
-        print!("\r{}%", percentage);
-        std::io::stdout()
-            .flush()
-            .map_err(|e| format!("Error: {}", e))?;
+        on_progress(n as u64);
     }
 
     //check metadata
@@ -138,9 +135,26 @@ pub fn ensure_remote_dir(sftp: &Sftp, remote: &str) -> Result<(), String> {
 pub fn transfer_tree(sftp: &Sftp, nodes: &[Node], preserve: bool) -> Result<(), String> {
     for node in nodes {
         if node.is_dir {
+            println!("{}/{}", "  ".repeat(node.depth), node.name);
             ensure_remote_dir(sftp, &node.remote_path)?;
         } else {
-            transfer_file(sftp, &node.local_path, &node.remote_path, preserve)?;
+            //for the ansi art clossure:
+            let indent = "  ".repeat(node.depth);
+            let total = node.size;
+            let mut transferred: u64 = 0;
+            transfer_file(sftp, &node.local_path, &node.remote_path, preserve, |n| {
+                transferred += n;
+                let pct = if total == 0 {
+                    100
+                } else {
+                    transferred * 100 / total
+                };
+                let filled = (pct / 5) as usize;
+                let bar = "█".repeat(filled) + &"░".repeat(20 - filled);
+                print!("\r\x1b[K{}{} [{}] {}%", indent, node.name, bar, pct);
+                //how to solve all your problems, ignore theme
+                let _ = std::io::stdout().flush();
+            })?;
         }
     }
 
@@ -226,7 +240,9 @@ pub fn build_tree(
         let entry = entry.map_err(|e| format!("Error: {}", e))?;
         let path = entry.path();
         let name = entry.file_name();
-        let local_path = path.to_str().ok_or(format!("Error: invalid path"))?;
+        let local_path = path.to_str().ok_or(format!(
+            "Error: /mnt/shared/mcps/mcp_accountinginvalid path"
+        ))?;
         let remote_path = format!("{}/{}", remote, name.to_string_lossy());
 
         if path.is_dir() {

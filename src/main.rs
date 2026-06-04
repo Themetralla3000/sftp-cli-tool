@@ -116,9 +116,13 @@ fn main() {
                         }
                     } else {
                         //is file
-                        if let Err(e) =
-                            ssh::transfer_file(&sftp, &args.origin, &remote_target, args.presserve)
-                        {
+                        if let Err(e) = ssh::transfer_file(
+                            &sftp,
+                            &args.origin,
+                            &remote_target,
+                            args.presserve,
+                            |_| {},
+                        ) {
                             eprintln!("Error: {}", e);
                             std::process::exit(1);
                         }
