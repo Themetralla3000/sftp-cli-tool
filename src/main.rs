@@ -102,10 +102,15 @@ fn main() {
                             eprintln!("Error: {} is a directory", args.origin);
                             std::process::exit(1);
                         }
-
-                        if let Err(e) =
-                            ssh::transfer_dir(&sftp, &args.origin, &remote_target, args.presserve)
+                        //1. walk the local file tree into a node vector
+                        let mut tree = Vec::new();
+                        if let Err(e) = ssh::build_tree(&args.origin, &remote_target, 0, &mut tree)
                         {
+                            eprintln!("Error: {}", e);
+                            std::process::exit(1);
+                        }
+                        //2. transfer the whole vector
+                        if let Err(e) = ssh::transfer_tree(&sftp, &tree, args.presserve) {
                             eprintln!("Error: {}", e);
                             std::process::exit(1);
                         }

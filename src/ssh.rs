@@ -1,5 +1,6 @@
 use rpassword::read_password;
 use ssh2::{Session, Sftp};
+use std::fs::metadata;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
@@ -123,48 +124,34 @@ pub fn transfer_file(sftp: &Sftp, local: &str, remote: &str, preserve: bool) -> 
 
     Ok(())
 }
-
-pub fn transfer_dir(sftp: &Sftp, local: &str, remote: &str, preserve: bool) -> Result<(), String> {
+pub fn ensure_remote_dir(sftp: &Sftp, remote: &str) -> Result<(), String> {
     match sftp.stat(Path::new(remote)) {
-        Ok(stat) if stat.is_dir() => {
-            //exists and it's a directory
-        }
-        Ok(_) => {
-            //exists but it's not a directory
-            return Err(format!(
-                "Remote path {} exists and it's not a directory",
-                remote
-            ));
-        }
-        Err(_) => {
-            sftp.mkdir(Path::new(remote), 0o755)
-                .map_err(|e| format!("Error creating directory: {}", e))?;
-        }
+        Ok(s) if s.is_dir() => {} // ja existeix
+        Ok(_) => return Err(format!("{} exists and is not a dir", remote)),
+        Err(_) => sftp
+            .mkdir(Path::new(remote), 0o755)
+            .map_err(|e| format!("Error creating directory: {}", e))?,
     }
-
-    for entry in std::fs::read_dir(local).map_err(|e| format!("Error opening iterator: {}", e))? {
-        // read_dir returns iterator, entry now is a element of the iterator, so at first is a
-        // Result<DirEntry, Error>
-        // need to unpack first
-        let entry = entry.map_err(|e| format!("Error: {}", e))?; //this is called
-        //shadowing, it means to create a new variable shadowing the previous one
-        let path = entry.path();
-        let name = entry.file_name();
-
-        //now for invoking the recursion, i need to create the path the way transfer_dir uses it
-        let remote_path = format!("{}/{}", remote, name.to_string_lossy());
-        let local_path = path.to_str().ok_or("Path is not a valid UTF-8")?;
-        //Recursion decission: file or directory:
-        if path.is_dir() {
-            //recursion
-            transfer_dir(sftp, local_path, &remote_path, preserve)?;
+    Ok(())
+}
+//given the tree of files, transfer all
+pub fn transfer_tree(sftp: &Sftp, nodes: &[Node], preserve: bool) -> Result<(), String> {
+    for node in nodes {
+        if node.is_dir {
+            ensure_remote_dir(sftp, &node.remote_path)?;
         } else {
-            //is a file
-            transfer_file(sftp, local_path, &remote_path, preserve)?;
+            transfer_file(sftp, &node.local_path, &node.remote_path, preserve)?;
         }
     }
+
+    //if necessary write metadata (this happens AFTER everything is created bc every time a file is
+    //created inside a directory, the accesed time changes)
     if preserve {
-        apply_metadata(sftp, local, remote)?;
+        for node in nodes.iter().rev() {
+            if node.is_dir {
+                apply_metadata(sftp, &node.local_path, &node.remote_path)?;
+            }
+        }
     }
 
     Ok(())
@@ -200,6 +187,63 @@ fn apply_metadata(sftp: &Sftp, local: &str, remote: &str) -> Result<(), String> 
 
     sftp.setstat(Path::new(remote), stat)
         .map_err(|e| format!("Error apllying metadata to {}: {}", remote, e))?;
+
+    Ok(())
+}
+
+//for the ansi art that prints the progress as a file tree, i need to create a struct to encapsulate
+//all the
+pub struct Node {
+    pub depth: usize,
+    pub name: String,
+    pub local_path: String,
+    pub remote_path: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+//before sending anything, first we build the tree and then send it with the tree
+pub fn build_tree(
+    local: &str,
+    remote: &str,
+    depth: usize,
+    nodes: &mut Vec<Node>,
+) -> Result<(), String> {
+    nodes.push(Node {
+        depth,
+        name: Path::new(local)
+            .file_name()
+            .ok_or(format!("invalid path: {}", local))?
+            .to_string_lossy()
+            .to_string(),
+        local_path: local.to_string(),
+        remote_path: remote.to_string(),
+        is_dir: true,
+        size: 0,
+    });
+
+    for entry in std::fs::read_dir(local).map_err(|e| format!("Could not open dir: {}", e))? {
+        //shadowing
+        let entry = entry.map_err(|e| format!("Error: {}", e))?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let local_path = path.to_str().ok_or(format!("Error: invalid path"))?;
+        let remote_path = format!("{}/{}", remote, name.to_string_lossy());
+
+        if path.is_dir() {
+            build_tree(&local_path, &remote_path, depth + 1, nodes)?;
+        } else {
+            nodes.push(Node {
+                depth: depth + 1,
+                name: name.to_string_lossy().to_string(),
+                local_path: local_path.to_string(),
+                remote_path,
+                is_dir: false,
+                size: metadata(local_path)
+                    .map_err(|e| format!("Metadata error: {}", e))?
+                    .len(),
+            });
+        }
+    }
 
     Ok(())
 }
