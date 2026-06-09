@@ -1,5 +1,6 @@
 mod ssh;
 use clap::Parser;
+use ssh2::Sftp;
 use std::path::Path;
 #[derive(Parser, Debug)]
 #[command(name = "mysftp")]
@@ -17,7 +18,7 @@ struct Args {
     port: u16,
 
     #[arg(short, long)]
-    presserve: bool,
+    preserve: bool,
     // path to the ssh keys, optional
     #[arg(short = 'i', long = "identity")]
     key_path: Option<String>,
@@ -31,6 +32,18 @@ struct Destination {
     user: String,
     host: String,
     path: String,
+}
+
+enum Endpoint {
+    Local(String),
+    Remote(Destination),
+}
+
+fn parse_endpoint(input: &str) -> Endpoint {
+    match parse_destination(input) {
+        Ok(dest) => Endpoint::Remote(dest),
+        Err(_) => Endpoint::Local(input.to_string()),
+    }
 }
 fn parse_destination(input: &str) -> Result<Destination, String> {
     let (user, rest) = input.split_once('@').ok_or("Invalid format, @ missing")?;
@@ -52,95 +65,108 @@ fn parse_destination(input: &str) -> Result<Destination, String> {
     })
 }
 
+fn connect_and_auth(remote: &Destination, port: u16, key_path: Option<&str>) -> Sftp {
+    let session = match ssh::connect(&remote.host, port) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+    match ssh::authenticate(&session, &remote.user, key_path) {
+        Ok(()) => match session.sftp() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error opening sftp: {}", e);
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let args = Args::parse();
 
-    match parse_destination(&args.destination) {
-        Ok(dest) => {
-            println!("Connecting to {}@{}:{}...", dest.user, dest.host, args.port);
+    let origin = parse_endpoint(&args.origin);
+    let destination = parse_endpoint(&args.destination);
 
-            let session = match ssh::connect(&dest.host, args.port) {
-                Ok(s) => {
-                    println!("Connection established and handshake completed.");
-                    s
-                }
-                Err(e) => {
-                    eprintln!("Error: {}", e);
+    match (origin, destination) {
+        //Push
+        (Endpoint::Local(local), Endpoint::Remote(remote)) => {
+            let sftp = connect_and_auth(&remote, args.port, args.key_path.as_deref());
+
+            let basename = match Path::new(&local).file_name() {
+                Some(name) => name.to_string_lossy(),
+                None => {
+                    eprintln!("Error: invalid source path: {}", local);
                     std::process::exit(1);
                 }
             };
+            let remote_target = match sftp.stat(Path::new(&remote.path)) {
+                Ok(s) if s.is_dir() => format!("{}/{}", remote.path, basename),
+                _ => remote.path.clone(),
+            };
 
-            match ssh::authenticate(&session, &dest.user, args.key_path.as_deref()) {
-                Ok(()) => {
-                    println!("Authentication successful.");
-                    let sftp = match session.sftp() {
-                        Ok(s) => s,
-                        Err(e) => {
-                            eprintln!("Error opening sftp: {}", e);
-                            std::process::exit(1)
-                        }
-                    };
-
-                    //to match how scp handles creating files from the path adding intermidiate
-                    //directories, I have to first construct the path
-
-                    let basename = match Path::new(&args.origin).file_name() {
-                        Some(name) => name.to_string_lossy(),
-                        None => {
-                            eprintln!("Error: invalid source path: {}", args.origin);
-                            std::process::exit(1);
-                        }
-                    };
-                    let remote_target = match sftp.stat(Path::new(&dest.path)) {
-                        Ok(s) if s.is_dir() => format!("{}/{}", dest.path, basename),
-                        _ => dest.path.clone(),
-                    };
-
-                    if Path::new(&args.origin).is_dir() {
-                        if !args.recursive {
-                            // r + not directory
-                            eprintln!("Error: {} is a directory", args.origin);
-                            std::process::exit(1);
-                        }
-                        //1. walk the local file tree into a node vector
-                        let mut tree = Vec::new();
-                        if let Err(e) = ssh::build_tree(&args.origin, &remote_target, 0, &mut tree)
-                        {
-                            eprintln!("Error: {}", e);
-                            std::process::exit(1);
-                        }
-                        //2. transfer the whole vector
-                        if let Err(e) = ssh::transfer_tree(&sftp, &tree, args.presserve) {
-                            eprintln!("Error: {}", e);
-                            std::process::exit(1);
-                        }
-                    } else {
-                        //is file
-                        if let Err(e) = ssh::transfer_file(
-                            &sftp,
-                            &args.origin,
-                            &remote_target,
-                            args.presserve,
-                            |_| {},
-                        ) {
-                            eprintln!("Error: {}", e);
-                            std::process::exit(1);
-                        }
-                    }
-
-                    //recursive
-
-                    println!("File transferred correctly");
+            if Path::new(&local).is_dir() {
+                if !args.recursive {
+                    eprintln!("Error: {} is a directory", local);
+                    std::process::exit(1);
                 }
-
-                Err(e) => {
+                let mut tree = Vec::new();
+                if let Err(e) = ssh::build_tree(&local, &remote_target, 0, &mut tree) {
                     eprintln!("Error: {}", e);
                     std::process::exit(1);
                 }
+                if let Err(e) = ssh::transfer_tree(&sftp, &tree, args.preserve) {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            } else if let Err(e) =
+                ssh::transfer_file(&sftp, &local, &remote_target, args.preserve, |_| {})
+            {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
             }
+
+            println!("File transferred correctly");
         }
-        Err(e) => {
-            eprintln!("Error: {}", e);
+        //pull
+        (Endpoint::Remote(remote), Endpoint::Local(local)) => {
+            let sftp = connect_and_auth(&remote, args.port, args.key_path.as_deref());
+
+            //if the local destination is an existing dir, append the remote file name instead of overwriting the dir
+            let basename = match Path::new(&remote.path).file_name() {
+                Some(name) => name.to_string_lossy(),
+                None => {
+                    eprintln!("Error: invalid remote path: {}", remote.path);
+                    std::process::exit(1);
+                }
+            };
+            let local_target = if Path::new(&local).is_dir() {
+                format!("{}/{}", local, basename)
+            } else {
+                local
+            };
+
+            if let Err(e) = ssh::download_file(&sftp, &remote.path, &local_target, |_| {}) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+
+            println!("File downloaded correctly");
+        }
+
+        //invalid convinations (two locals or two remotes)
+        (Endpoint::Remote(_), Endpoint::Remote(_)) => {
+            eprintln!("Error: remote-to-remote transfers are not supported");
+            std::process::exit(1);
+        }
+        (Endpoint::Local(_), Endpoint::Local(_)) => {
+            eprintln!("Error: at least one endpoint must be remote");
             std::process::exit(1);
         }
     }

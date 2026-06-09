@@ -121,6 +121,34 @@ pub fn transfer_file(
 
     Ok(())
 }
+
+pub fn download_file(
+    sftp: &Sftp,
+    remote: &str,
+    local: &str,
+    mut on_progress: impl FnMut(u64),
+) -> Result<(), String> {
+    let mut remote_file = sftp
+        .open(Path::new(remote))
+        .map_err(|e| format!("Remote file not found: {}", e))?;
+    let mut local_file =
+        std::fs::File::create(local).map_err(|e| format!("Could not create local file: {}", e))?;
+
+    let mut buf = [0u8; 32 * 1024];
+    loop {
+        let n = remote_file
+            .read(&mut buf)
+            .map_err(|e| format!("Could not read remote file: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        local_file
+            .write_all(&buf[..n])
+            .map_err(|e| format!("Error writing into local file: {}", e))?;
+        on_progress(n as u64);
+    }
+    Ok(())
+}
 pub fn ensure_remote_dir(sftp: &Sftp, remote: &str) -> Result<(), String> {
     match sftp.stat(Path::new(remote)) {
         Ok(s) if s.is_dir() => {} // ja existeix
@@ -240,9 +268,9 @@ pub fn build_tree(
         let entry = entry.map_err(|e| format!("Error: {}", e))?;
         let path = entry.path();
         let name = entry.file_name();
-        let local_path = path.to_str().ok_or(format!(
-            "Error: /mnt/shared/mcps/mcp_accountinginvalid path"
-        ))?;
+        let local_path = path
+            .to_str()
+            .ok_or(format!("Invalid path: {}", path.display()))?;
         let remote_path = format!("{}/{}", remote, name.to_string_lossy());
 
         if path.is_dir() {
