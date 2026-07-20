@@ -1,0 +1,9 @@
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@         WARNING: UNPROTECTED PRIVATE KEY FILE!          @
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+Permissions 0755 for '/home/arnau/shared/projects/sftp-cli-tool/.testenv/hostkey' are too open.
+It is required that your private key files are NOT accessible by others.
+This private key will be ignored.
+Unable to load host key "/home/arnau/shared/projects/sftp-cli-tool/.testenv/hostkey": bad permissions
+Unable to load host key: /home/arnau/shared/projects/sftp-cli-tool/.testenv/hostkey
+sshd: no hostkeys available -- exiting.

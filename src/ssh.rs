@@ -122,6 +122,36 @@ pub fn transfer_file(
     Ok(())
 }
 
+pub fn download_tree(sftp: &Sftp, nodes: &[Node]) -> Result<(), String> {
+    for node in nodes {
+        if node.is_dir {
+            println!("{}/{}", " ".repeat(node.depth), node.name);
+            //could use create_dir bc it's alredy in preorder, but create_dir_all also skips
+            //checking if the dir alredy exists
+            std::fs::create_dir_all(&node.local_path)
+                .map_err(|e| format!("Could not create local dir {}: {}", node.local_path, e))?;
+        } else {
+            //same as transfer_tree but using download_file
+            let indent = "  ".repeat(node.depth);
+            let total = node.size;
+            let mut transferred: u64 = 0;
+            download_file(sftp, &node.remote_path, &node.local_path, |n| {
+                transferred += n;
+                let pct = if total == 0 {
+                    100
+                } else {
+                    transferred * 100 / total
+                };
+                let filled = (pct / 5) as usize;
+                let bar = "█".repeat(filled) + &"░".repeat(20 - filled);
+                print!("\r\x1b[K{}{} [{}] {}%", indent, node.name, bar, pct);
+                let _ = std::io::stdout().flush();
+            })?;
+            println!();
+        }
+    }
+    Ok(())
+}
 pub fn download_file(
     sftp: &Sftp,
     remote: &str,
@@ -183,6 +213,7 @@ pub fn transfer_tree(sftp: &Sftp, nodes: &[Node], preserve: bool) -> Result<(), 
                 //how to solve all your problems, ignore theme
                 let _ = std::io::stdout().flush();
             })?;
+            println!();
         }
     }
 
@@ -285,6 +316,55 @@ pub fn build_tree(
                 size: metadata(local_path)
                     .map_err(|e| format!("Metadata error: {}", e))?
                     .len(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+//very similar skeleton from build_tree
+pub fn build_remote_tree(
+    sftp: &Sftp,
+    local: &str,
+    remote: &str,
+    depth: usize,
+    nodes: &mut Vec<Node>,
+) -> Result<(), String> {
+    nodes.push(Node {
+        depth,
+        name: Path::new(remote)
+            .file_name()
+            .ok_or(format!("invalid remote path: {}", remote))?
+            .to_string_lossy()
+            .to_string(),
+        local_path: local.to_string(),
+        remote_path: remote.to_string(),
+        is_dir: true,
+        size: 0,
+    });
+    //read_dir returns a PathBuf and a FileStat (everything we need yuju)
+    for (entryPath, stat) in sftp
+        .readdir(remote)
+        .map_err(|e| format!("Error reading remote dir: {}", e))?
+    {
+        let name = entryPath
+            .file_name()
+            .ok_or(format!("Invalid remote entry: {}", entryPath.display()))?
+            .to_string_lossy();
+        let child_remote = format!("{}/{}", remote, name);
+        let child_local = format!("{}/{}", local, name);
+
+        if stat.is_dir() {
+            build_remote_tree(sftp, &child_local, &child_remote, depth + 1, nodes)?;
+        } else {
+            nodes.push(Node {
+                depth: depth + 1,
+                name: name.to_string(),
+                local_path: child_local,
+                remote_path: child_remote,
+                is_dir: false,
+                size: stat.size.unwrap_or(0),
             });
         }
     }

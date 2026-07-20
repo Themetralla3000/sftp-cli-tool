@@ -1,7 +1,12 @@
 mod ssh;
+use crate::ssh::{
+    authenticate, build_remote_tree, build_tree, connect, download_file, download_tree,
+    transfer_file, transfer_tree,
+};
 use clap::Parser;
 use ssh2::Sftp;
 use std::path::Path;
+
 #[derive(Parser, Debug)]
 #[command(name = "mysftp")]
 #[command(about = "a cli sftp client")]
@@ -66,14 +71,14 @@ fn parse_destination(input: &str) -> Result<Destination, String> {
 }
 
 fn connect_and_auth(remote: &Destination, port: u16, key_path: Option<&str>) -> Sftp {
-    let session = match ssh::connect(&remote.host, port) {
+    let session = match connect(&remote.host, port) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
     };
-    match ssh::authenticate(&session, &remote.user, key_path) {
+    match authenticate(&session, &remote.user, key_path) {
         Ok(()) => match session.sftp() {
             Ok(s) => s,
             Err(e) => {
@@ -117,16 +122,16 @@ fn main() {
                     std::process::exit(1);
                 }
                 let mut tree = Vec::new();
-                if let Err(e) = ssh::build_tree(&local, &remote_target, 0, &mut tree) {
+                if let Err(e) = build_tree(&local, &remote_target, 0, &mut tree) {
                     eprintln!("Error: {}", e);
                     std::process::exit(1);
                 }
-                if let Err(e) = ssh::transfer_tree(&sftp, &tree, args.preserve) {
+                if let Err(e) = transfer_tree(&sftp, &tree, args.preserve) {
                     eprintln!("Error: {}", e);
                     std::process::exit(1);
                 }
             } else if let Err(e) =
-                ssh::transfer_file(&sftp, &local, &remote_target, args.preserve, |_| {})
+                transfer_file(&sftp, &local, &remote_target, args.preserve, |_| {})
             {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
@@ -151,13 +156,38 @@ fn main() {
             } else {
                 local
             };
+            //si es dir
 
-            if let Err(e) = ssh::download_file(&sftp, &remote.path, &local_target, |_| {}) {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
+            match sftp.stat(Path::new(&remote.path)) {
+                //exists and is a dir
+                Ok(s) if s.is_dir() => {
+                    if !args.recursive {
+                        eprintln!("Error, {} is a directory", remote.path);
+                        std::process::exit(1)
+                    }
+                    let mut tree = Vec::new();
+                    if let Err(e) =
+                        build_remote_tree(&sftp, &local_target, &remote.path, 0, &mut tree)
+                    {
+                        eprintln!("Error building remote tree: {}", e);
+                        std::process::exit(1);
+                    }
+                    if let Err(e) = download_tree(&sftp, &tree) {
+                        eprintln!("Error downloading tree: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                Ok(_) => {
+                    if let Err(e) = download_file(&sftp, &remote.path, &local_target, |_| {}) {
+                        eprintln!("Error downloading file: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {} on remote path {}", e, remote.path);
+                    std::process::exit(1);
+                }
             }
-
-            println!("File downloaded correctly");
         }
 
         //invalid convinations (two locals or two remotes)
